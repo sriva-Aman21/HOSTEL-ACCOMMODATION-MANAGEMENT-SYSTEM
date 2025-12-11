@@ -1,49 +1,123 @@
-import java.awt.*;
-import java.awt.event.*;
-import java.io.*;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import java.awt.BorderLayout;
+import java.awt.CardLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Cursor;
+import java.awt.Dimension;
+import java.awt.FlowLayout;
+import java.awt.Font;
+import java.awt.GridBagLayout; // <-- FIXED: Added missing import
+import java.awt.GridLayout;
+import java.awt.Insets;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.Filters;
+import org.bson.Document;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import javax.swing.*;
+import java.util.stream.Collectors;
+
+import javax.swing.AbstractAction;
+import javax.swing.Action;
+import javax.swing.BorderFactory;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
+import javax.swing.JComboBox;
+import javax.swing.JComponent;
+import javax.swing.JDialog;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JPasswordField;
+import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
+import javax.swing.JTable;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
+import javax.swing.ListSelectionModel;
+import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
-// --------------------
 
 public class HostelManagementSystem extends JFrame {
     
     // ====================================================================
-    // --- DATABASE CONFIGURATION (JDBC) ---
-    // Change these values to match your MySQL server settings
-    private static final String JDBC_DRIVER = "com.mysql.cj.jdbc.Driver";
-    private static final String DB_URL = "jdbc:mysql://localhost:3306/HostelManagementDB";
-    private static final String DB_USER = "root";
-    private static final String DB_PASS = "AmAn@12$89"; // <--- CHANGE THIS!
+    // --- DATABASE CONFIGURATION (MongoDB) ---
+    // Change these values to match your MongoDB server settings
+    private static final String MONGO_URI = "mongodb://localhost:27017";
+    private static final String DB_NAME = "HostelManagementDB";
+    private static final String STUDENTS_COLLECTION = "students";
+    private static final String STAFF_COLLECTION = "staff";
+    private static final String SUGGESTIONS_COLLECTION = "suggestions";
+    private static final String FEES_COLLECTION = "fees";
     
-    private Connection getConnection() throws SQLException {
-        // NOTE: Class.forName(JDBC_DRIVER) is usually required once
+    private MongoClient mongoClient;
+    private MongoDatabase database;
+    
+    // Helper method to initialize MongoDB connection
+    private void initializeMongoDB() {
         try {
-            Class.forName(JDBC_DRIVER);
-        } catch (ClassNotFoundException e) {
-            System.err.println("MySQL JDBC Driver not found.");
-            throw new SQLException("JDBC Driver not available.", e);
+            mongoClient = MongoClients.create(MONGO_URI);
+            database = mongoClient.getDatabase(DB_NAME);
+            System.out.println("Connected to MongoDB successfully.");
+        } catch (Exception e) {
+            System.err.println("MongoDB connection failed. The application will use local file storage.");
+            JOptionPane.showMessageDialog(this, 
+                "MongoDB connection failed. The application will use local file storage.", 
+                "Database Connection Error", JOptionPane.ERROR_MESSAGE);
         }
-        return DriverManager.getConnection(DB_URL, DB_USER, DB_PASS);
+    }
+    
+    private MongoCollection<Document> getStudentsCollection() {
+        return database.getCollection(STUDENTS_COLLECTION);
+    }
+    
+    private MongoCollection<Document> getStaffCollection() {
+        return database.getCollection(STAFF_COLLECTION);
+    }
+    
+    private MongoCollection<Document> getSuggestionsCollection() {
+        return database.getCollection(SUGGESTIONS_COLLECTION);
+    }
+    
+    private MongoCollection<Document> getFeesCollection() {
+        return database.getCollection(FEES_COLLECTION);
     }
     // ====================================================================
     
     // --- COLOR PALETTE (Final Optimized) ---
-    private static final Color PRIMARY_COLOR = new Color(0, 102, 204);     
+    private static final Color PRIMARY_COLOR = new Color(0, 102, 204);      
     private static final Color ACCENT_COLOR = new Color(10, 100, 10);       // Dark Green for selection/accents
     private static final Color DELETE_COLOR = new Color(220, 50, 50);       
     private static final Color BACKGROUND_GRAY = new Color(200, 200, 210); 
     
     public static final Color CARD_BACKGROUND = new Color(255, 255, 255); // White
     public static final Color TABLE_STRIPE = new Color(215, 215, 215);    // Visible Gray stripe
+    private static final Color STATUS_RESOLVED_COLOR = new Color(34, 139, 34); // Forest Green
+    private static final Color STATUS_PENDING_COLOR = new Color(255, 140, 0); // Dark Orange
 
     // --- FONT STYLES (Unchanged) ---
     private static final Font TITLE_FONT = new Font("Segoe UI", Font.BOLD, 28);
@@ -52,7 +126,6 @@ public class HostelManagementSystem extends JFrame {
     private static final Font BUTTON_FONT = new Font("Segoe UI", Font.BOLD, 14);
 
     // --- Data Model & File Constant ---
-    // NOTE: File constants are ONLY used for reading/writing persistence data before migration
     private static final String STUDENT_DATA_FILE = "hostel_students.dat"; 
     private static final String STAFF_DATA_FILE = "hostel_staff.dat"; 
     private static final String SUGGESTION_DATA_FILE = "hostel_suggestions.dat"; 
@@ -73,7 +146,9 @@ public class HostelManagementSystem extends JFrame {
     private DefaultTableModel suggestionTableModel; 
     
     private int editingIndex = -1; 
-    private int editingStaffIndex = -1; 
+    
+    // --- ENHANCEMENT FIELDS ---
+    private JTextField studentSearchField; 
 
     // --- GUI Components ---
     private CardLayout cardLayout;
@@ -85,7 +160,7 @@ public class HostelManagementSystem extends JFrame {
     // --- Register Dialog Fields ---
     private JTextField nameField, parentNameField, studentMobileField, parentMobileField, roomField;
     
-    // --- NEW STAFF Fields ---
+    // --- STAFF Fields ---
     private JTextField staffNameField, staffMobileField, staffIDField;
     private JTextArea staffAddressArea; 
     private JComboBox<String> staffRoleComboBox;
@@ -97,7 +172,7 @@ public class HostelManagementSystem extends JFrame {
     private static final String MOCK_PASS = "1234";
 
     public HostelManagementSystem() {
-        // FIX: Switch to Nimbus L&F for consistent custom styling
+        // L&F Setup
         try {
             for (UIManager.LookAndFeelInfo info : UIManager.getInstalledLookAndFeels()) {
                 if ("Nimbus".equals(info.getName())) {
@@ -108,27 +183,25 @@ public class HostelManagementSystem extends JFrame {
         } catch (Exception e) {
             try {
                  UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-            } catch (Exception ex) {
-                // Ignore
-            }
+            } catch (Exception ex) { }
         }
         
-        // --- FINAL HEADER VISIBILITY FIX ---
         UIManager.put("TableHeader.background", PRIMARY_COLOR.darker());
         UIManager.put("TableHeader.opaque", Boolean.TRUE);
-        // --- END FINAL FIX ---
 
-        // Attempt to load data from MySQL first, fall back to files if DB fails/is empty
+        // Initialize MongoDB connection
+        initializeMongoDB();
+        
         loadAllData();
 
         setTitle("Hostel Management System - Data Persistent & Accounts");
-        setSize(950, 700); 
+        setSize(1000, 750); // Increased size for new panels
         
         setDefaultCloseOperation(DO_NOTHING_ON_CLOSE); 
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
-                saveAllData(); // Save ALL data to MySQL
+                saveAllData();
                 dispose(); 
                 System.exit(0); 
             }
@@ -148,6 +221,7 @@ public class HostelManagementSystem extends JFrame {
         mainPanel.add(staffManagementPanel(), "StaffManagement"); 
         mainPanel.add(helplinePanel(), "Helpline"); 
         mainPanel.add(reviewSuggestionsPanel(), "ReviewSuggestions"); 
+        mainPanel.add(viewStudentFeedbackPanel(), "StudentFeedbackStatus"); // NEW PANEL
 
         add(mainPanel);
         cardLayout.show(mainPanel, "Login");
@@ -160,95 +234,263 @@ public class HostelManagementSystem extends JFrame {
         passwordField = new JPasswordField();
         welcomeLabel = new JLabel("Welcome!", SwingConstants.CENTER);
         welcomeLabel.setFont(TITLE_FONT.deriveFont(24f));
+        studentSearchField = new JTextField(15); 
     }
-    
+
     // ====================================================================
-    // --- JDBC PERSISTENCE METHODS ---
+    // --- JDBC PERSISTENCE CORE LOGIC ---
     // ====================================================================
 
     private void loadAllData() {
         try {
-            loadStudentsFromDB();
-            loadStaffFromDB();
-            // loadSuggestionsFromDB(); // Suggestion logic is complex due to structure, omitted for brevity
-        } catch (SQLException e) {
-            System.err.println("Database connection or loading failed. Falling back to file storage.");
-            // Fallback to old file system if DB connection fails
+            if (database != null) {
+                loadStudentsFromDB();
+                loadStaffFromDB();
+                loadSuggestionsFromDB(); 
+                System.out.println("Data loaded successfully from MongoDB.");
+            } else {
+                throw new Exception("MongoDB not initialized");
+            }
+        } catch (Exception e) {
+            System.err.println("MongoDB connection or loading failed. Falling back to file storage. Error: " + e.getMessage());
             loadStudentsFromFile(); 
             loadStaffFromFile(); 
-            // Note: Suggestions usually don't need complex migration on startup
             loadSuggestionsFromFile();
-            JOptionPane.showMessageDialog(this, "Could not connect to MySQL. Using local file storage.", "DB Error", JOptionPane.WARNING_MESSAGE);
         }
     }
 
     private void saveAllData() {
         try {
-            saveStudentsToDB();
-            saveStaffToDB();
-            // saveSuggestionsToDB();
-        } catch (SQLException e) {
-            System.err.println("Database saving failed. Saving to local files as backup.");
+            if (database != null) {
+                try {
+                    saveStudentsToDB();
+                    System.out.println("✓ Students saved to MongoDB.");
+                } catch (Exception e) {
+                    System.err.println("✗ Error saving students: " + e.getMessage());
+                    e.printStackTrace();
+                }
+                
+                try {
+                    saveStaffToDB();
+                    System.out.println("✓ Staff saved to MongoDB.");
+                } catch (Exception e) {
+                    System.err.println("✗ Error saving staff: " + e.getMessage());
+                    e.printStackTrace();
+                }
+                
+                try {
+                    saveSuggestionsToDB();
+                    System.out.println("✓ Suggestions saved to MongoDB.");
+                } catch (Exception e) {
+                    System.err.println("✗ Error saving suggestions: " + e.getMessage());
+                    e.printStackTrace();
+                }
+                
+                try {
+                    saveFeesToDB();
+                    System.out.println("✓ Fees saved to MongoDB.");
+                } catch (Exception e) {
+                    System.err.println("✗ Error saving fees: " + e.getMessage());
+                    e.printStackTrace();
+                }
+                System.out.println("Data saved successfully to MongoDB.");
+            } else {
+                throw new Exception("MongoDB not initialized");
+            }
+        } catch (Exception e) {
+            System.err.println("MongoDB saving failed. Saving to local files as backup. Error: " + e.getMessage());
             saveStudentsToFile();
             saveStaffToFile();
             saveSuggestionsToFile();
         }
     }
 
-    private void loadStudentsFromDB() throws SQLException {
+    private void loadStudentsFromDB() {
         studentList.clear();
-        String sql = "SELECT * FROM students";
-        try (Connection conn = getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql);
-             ResultSet rs = pstmt.executeQuery()) {
-
-            while (rs.next()) {
-                // NOTE: This assumes fee data is not yet in the DB and uses mock values
-                Student student = new Student(
-                    rs.getString("name"),
-                    rs.getString("parent_name"),
-                    rs.getString("course"),
-                    rs.getString("branch"),
-                    rs.getString("mobile"), // studentMobile
-                    rs.getString("mobile"), // parentMobile (Simplification: uses one field)
-                    rs.getString("room")
-                );
-                studentList.add(student);
+        try {
+            MongoCollection<Document> collection = getStudentsCollection();
+            for (Document doc : collection.find()) {
+                try {
+                    byte[] data = doc.get("serialized_data", org.bson.types.Binary.class).getData();
+                    if (data != null) {
+                        try (ByteArrayInputStream bis = new ByteArrayInputStream(data);
+                             ObjectInputStream ois = new ObjectInputStream(bis)) {
+                            Student student = (Student) ois.readObject();
+                            studentList.add(student);
+                        }
+                    }
+                } catch (IOException | ClassNotFoundException e) {
+                    System.err.println("Error deserializing student data: " + e.getMessage());
+                }
             }
+        } catch (Exception e) {
+            System.err.println("Error loading students from MongoDB: " + e.getMessage());
         }
     }
 
-    private void saveStudentsToDB() throws SQLException {
-        String insertSql = "INSERT INTO students (name, room, course, branch, parent_name, mobile) VALUES (?, ?, ?, ?, ?, ?)";
-        String deleteSql = "DELETE FROM students"; // Simplification: Delete all then re-insert
-
-        try (Connection conn = getConnection();
-             PreparedStatement deleteStmt = conn.prepareStatement(deleteSql);
-             PreparedStatement insertStmt = conn.prepareStatement(insertSql)) {
-
-            // 1. Clear existing data
-            deleteStmt.executeUpdate();
-
-            // 2. Insert all current data
+    private void saveStudentsToDB() {
+        try {
+            MongoCollection<Document> collection = getStudentsCollection();
+            collection.deleteMany(Filters.empty());
+            
             for (Student student : studentList) {
-                insertStmt.setString(1, student.name);
-                insertStmt.setString(2, student.room);
-                insertStmt.setString(3, student.course);
-                insertStmt.setString(4, student.branch);
-                insertStmt.setString(5, student.parentName);
-                insertStmt.setString(6, student.studentMobile);
-                insertStmt.addBatch();
+                try (ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                     ObjectOutputStream oos = new ObjectOutputStream(bos)) {
+                    oos.writeObject(student);
+                    byte[] data = bos.toByteArray();
+                    
+                    Document doc = new Document()
+                        .append("name", student.name)
+                        .append("room", student.room)
+                        .append("course", student.course)
+                        .append("branch", student.branch)
+                        .append("parentName", student.parentName)
+                        .append("studentMobile", student.studentMobile)
+                        .append("parentMobile", student.parentMobile)
+                        .append("serialized_data", data);
+                    
+                    collection.insertOne(doc);
+                } catch (IOException e) {
+                    System.err.println("Error serializing student: " + student.name);
+                }
             }
-            insertStmt.executeBatch();
+        } catch (Exception e) {
+            System.err.println("Error saving students to MongoDB: " + e.getMessage());
         }
     }
     
-    // Placeholder methods (you would need to implement these similarly)
-    private void loadStaffFromDB() throws SQLException { staffList.clear(); }
-    private void saveStaffToDB() throws SQLException { /* Implementation */ }
+    private void loadStaffFromDB() {
+        staffList.clear();
+        try {
+            if (database == null) {
+                System.err.println("Database is null, cannot load staff from MongoDB");
+                return;
+            }
+            MongoCollection<Document> collection = getStaffCollection();
+            int count = 0;
+            for (Document doc : collection.find()) {
+                Staff staff = new Staff(
+                    doc.getString("id"),
+                    doc.getString("name"),
+                    doc.getString("role"),
+                    doc.getString("mobile"),
+                    doc.getString("address")
+                );
+                staffList.add(staff);
+                count++;
+            }
+            System.out.println("Loaded " + count + " staff members from MongoDB.");
+        } catch (Exception e) {
+            System.err.println("Error loading staff from MongoDB: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    private void saveStaffToDB() {
+        try {
+            MongoCollection<Document> collection = getStaffCollection();
+            collection.deleteMany(Filters.empty());
+            
+            for (Staff staff : staffList) {
+                Document doc = new Document()
+                    .append("id", staff.id)
+                    .append("name", staff.name)
+                    .append("role", staff.role)
+                    .append("mobile", staff.mobile)
+                    .append("address", staff.address);
+                
+                collection.insertOne(doc);
+            }
+            System.out.println("Staff saved to MongoDB: " + staffList.size() + " records.");
+        } catch (Exception e) {
+            System.err.println("Error saving staff to MongoDB: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    // --- UPDATED SUGGESTION JDBC LOGIC ---
+    private void loadSuggestionsFromDB() {
+        suggestionList.clear();
+        try {
+            if (database == null) {
+                System.err.println("Database is null, cannot load suggestions from MongoDB");
+                return;
+            }
+            MongoCollection<Document> collection = getSuggestionsCollection();
+            int count = 0;
+            for (Document doc : collection.find()) {
+                Suggestion suggestion = new Suggestion(
+                    doc.getString("sender"),
+                    doc.getString("type"),
+                    doc.getString("body")
+                );
+                suggestion.timestamp = doc.getString("timestamp");
+                suggestion.status = doc.getString("status");
+                suggestion.adminResponse = doc.getString("adminResponse");
+                suggestionList.add(suggestion);
+                count++;
+            }
+            System.out.println("Loaded " + count + " suggestions from MongoDB.");
+        } catch (Exception e) {
+            System.err.println("Error loading suggestions from MongoDB: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void saveSuggestionsToDB() {
+        try {
+            MongoCollection<Document> collection = getSuggestionsCollection();
+            collection.deleteMany(Filters.empty());
+            
+            for (Suggestion s : suggestionList) {
+                Document doc = new Document()
+                    .append("timestamp", s.timestamp)
+                    .append("sender", s.sender)
+                    .append("type", s.type)
+                    .append("body", s.body)
+                    .append("status", s.status)
+                    .append("adminResponse", s.adminResponse);
+                
+                collection.insertOne(doc);
+            }
+            System.out.println("Suggestions saved to MongoDB: " + suggestionList.size() + " records.");
+        } catch (Exception e) {
+            System.err.println("Error saving suggestions to MongoDB: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    
+    private void saveFeesToDB() {
+        try {
+            MongoCollection<Document> collection = getFeesCollection();
+            collection.deleteMany(Filters.empty());
+            
+            int totalFeeRecords = 0;
+            for (Student student : studentList) {
+                for (Object paymentObj : student.payments) {
+                    if (paymentObj instanceof FeeRecord) {
+                        FeeRecord fee = (FeeRecord) paymentObj;
+                        Document doc = new Document()
+                            .append("studentName", student.name)
+                            .append("studentRoom", student.room)
+                            .append("date", fee.date)
+                            .append("amount", fee.amount)
+                            .append("notes", fee.notes);
+                        
+                        collection.insertOne(doc);
+                        totalFeeRecords++;
+                    }
+                }
+            }
+            System.out.println("Fees saved to MongoDB: " + totalFeeRecords + " payment records.");
+        } catch (Exception e) {
+            System.err.println("Error saving fees to MongoDB: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
     // --------------------------------------------------------------------
 
-    // --- Legacy File Persistence (Used for seamless file-to-DB migration) ---
+    // --- Legacy File Persistence (Retained for migration fallback) ---
     private void saveStudentsToFile() {
         try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(STUDENT_DATA_FILE))) {
             oos.writeObject(studentList);
@@ -260,7 +502,7 @@ public class HostelManagementSystem extends JFrame {
             @SuppressWarnings("unchecked") 
             ArrayList<Student> loadedList = (ArrayList<Student>) ois.readObject();
             studentList = loadedList;
-        } catch (FileNotFoundException e) { System.out.println("Student data file not found."); } 
+        } catch (FileNotFoundException e) { System.out.println("Student data file not found. Starting fresh."); } 
         catch (IOException | ClassNotFoundException e) { System.err.println("Error loading student data: " + e.getMessage()); }
     }
     
@@ -275,7 +517,7 @@ public class HostelManagementSystem extends JFrame {
             @SuppressWarnings("unchecked") 
             ArrayList<Staff> loadedList = (ArrayList<Staff>) ois.readObject();
             staffList = loadedList;
-        } catch (FileNotFoundException e) { System.out.println("Staff data file not found."); } 
+        } catch (FileNotFoundException e) { System.out.println("Staff data file not found. Starting fresh."); } 
         catch (IOException | ClassNotFoundException e) { System.err.println("Error loading staff data: " + e.getMessage()); }
     }
     
@@ -290,7 +532,7 @@ public class HostelManagementSystem extends JFrame {
             @SuppressWarnings("unchecked") 
             ArrayList<Suggestion> loadedList = (ArrayList<Suggestion>) ois.readObject();
             suggestionList = loadedList;
-        } catch (FileNotFoundException e) { System.out.println("Suggestion data file not found."); } 
+        } catch (FileNotFoundException e) { System.out.println("Suggestion data file not found. Starting fresh."); } 
         catch (IOException | ClassNotFoundException e) { System.err.println("Error loading suggestion data: " + e.getMessage()); }
     }
 
@@ -336,14 +578,7 @@ public class HostelManagementSystem extends JFrame {
         loginCard.add(formPanel, BorderLayout.CENTER);
 
         JButton okBtn = new JButton("LOGIN"); 
-        okBtn.setFont(BUTTON_FONT);
-        okBtn.setBackground(ACCENT_COLOR); 
-        okBtn.setForeground(Color.WHITE);
-        okBtn.setOpaque(true); 
-        okBtn.setBorderPainted(false);
-        okBtn.setFocusPainted(false);
-        okBtn.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
-        okBtn.putClientProperty("JButton.buttonType", "roundRect"); 
+        styleButton(okBtn, ACCENT_COLOR, Color.WHITE);
         
         Action loginAction = new AbstractAction("Login") {
             @Override
@@ -367,12 +602,15 @@ public class HostelManagementSystem extends JFrame {
         if (user.equals(MOCK_USER) && pass.equals(MOCK_PASS)) {
             welcomeLabel.setText("Welcome, " + user + "!");
             cardLayout.show(mainPanel, "Dashboard");
+            
+            // REMOVED checkAndDisplayAlerts() call as requested
+            
             passwordField.setText("");
         } else {
             JOptionPane.showMessageDialog(this, "Invalid Username or Password", "Login Error", JOptionPane.ERROR_MESSAGE);
         }
     }
-
+    
     // --- 2. DASHBOARD PANEL (Unchanged) ---
     private JPanel dashboardPanel() {
         JPanel panel = new JPanel(new BorderLayout(20, 20));
@@ -384,7 +622,6 @@ public class HostelManagementSystem extends JFrame {
         headerPanel.add(welcomeLabel);
         panel.add(headerPanel, BorderLayout.NORTH);
 
-        // Grid size adjusted to fit the new button (6 rows)
         JPanel buttonGrid = new JPanel(new GridLayout(6, 1, 0, 20)); 
         buttonGrid.setBorder(BorderFactory.createEmptyBorder(10, 150, 10, 150));
         buttonGrid.setBackground(BACKGROUND_GRAY); 
@@ -400,7 +637,7 @@ public class HostelManagementSystem extends JFrame {
         JButton logoutBtn = new JButton("👋 Logout");
         styleButton(logoutBtn, DELETE_COLOR, Color.WHITE);
         logoutBtn.addActionListener(e -> {
-            saveAllData(); // Save ALL data
+            saveAllData(); 
             usernameField.setText("");
             passwordField.setText("");
             cardLayout.show(mainPanel, "Login");
@@ -417,7 +654,6 @@ public class HostelManagementSystem extends JFrame {
         return panel;
     }
 
-    // --- Helper function for styling buttons (Unchanged) ---
     private JButton createDashboardButton(String text, Color bgColor, ActionListener listener) {
         JButton button = new JButton(text);
         styleButton(button, bgColor, Color.WHITE);
@@ -438,6 +674,7 @@ public class HostelManagementSystem extends JFrame {
 
     // --- 3. STUDENT REGISTRATION METHOD (Unchanged Logic) ---
     private void registerStudent(Student studentToEdit) {
+        // ... (Registration logic unchanged)
         nameField = new JTextField(20);
         parentNameField = new JTextField(20);
         studentMobileField = new JTextField(20);
@@ -495,7 +732,7 @@ public class HostelManagementSystem extends JFrame {
         regPanel.add(roomPanel);
 
         int result = JOptionPane.showConfirmDialog(this, regPanel, dialogTitle,
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+                 JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
         
         if (result == JOptionPane.OK_OPTION) {
             String name = nameField.getText().trim();
@@ -535,13 +772,14 @@ public class HostelManagementSystem extends JFrame {
             }
             
             refreshStudentTable();
-            saveAllData(); // Save ALL data
+            saveAllData(); 
         }
         editingIndex = -1;
     }
 
-    // --- 4. STUDENT MANAGEMENT PANEL ---
+    // --- 4. STUDENT MANAGEMENT PANEL (Enhanced with Search Filter) ---
     private JPanel viewStudentsPanel() {
+        // ... (Panel setup unchanged)
         JPanel panel = new JPanel(new BorderLayout(15, 15));
         panel.setBackground(BACKGROUND_GRAY); 
         panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
@@ -550,6 +788,25 @@ public class HostelManagementSystem extends JFrame {
         header.setFont(HEADER_FONT);
         header.setForeground(PRIMARY_COLOR.darker());
         panel.add(header, BorderLayout.NORTH);
+        
+        JPanel searchPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        searchPanel.setBackground(BACKGROUND_GRAY);
+        
+        JLabel searchLabel = new JLabel("Search by Name or Room:");
+        searchLabel.setFont(LABEL_FONT);
+        
+        studentSearchField.setFont(LABEL_FONT);
+        studentSearchField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void changedUpdate(DocumentEvent e) { filterStudents(); }
+            @Override
+            public void removeUpdate(DocumentEvent e) { filterStudents(); }
+            @Override
+            public void insertUpdate(DocumentEvent e) { filterStudents(); }
+        });
+        
+        searchPanel.add(searchLabel);
+        searchPanel.add(studentSearchField);
 
         String[] columnNames = {"Name", "Room", "Course/Branch", "Parent", "Parent Mobile", "Student Mobile"};
         studentTableModel = new DefaultTableModel(columnNames, 0) {
@@ -558,30 +815,30 @@ public class HostelManagementSystem extends JFrame {
         };
         studentTable = new JTable(studentTableModel);
         
-        // --- Table Styling ---
         studentTable.getTableHeader().setFont(BUTTON_FONT.deriveFont(Font.BOLD, 14f));
-        studentTable.getTableHeader().setBackground(PRIMARY_COLOR); // Deep Blue Header
-        studentTable.getTableHeader().setForeground(Color.WHITE);   // White Text
+        studentTable.getTableHeader().setBackground(PRIMARY_COLOR);
+        studentTable.getTableHeader().setForeground(Color.WHITE);
         
         studentTable.setSelectionBackground(ACCENT_COLOR); 
         studentTable.setSelectionForeground(Color.WHITE);  
 
-        // Add row striping for visibility
         studentTable.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
             @Override
             public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
                 Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
                 
-                if (c instanceof JComponent) {
-                    ((JComponent) c).setOpaque(true); 
+                if (c instanceof JComponent jc) {
+                    jc.setOpaque(true); 
                 }
 
-                c.setForeground(Color.BLACK); 
+                if (c != null) {
+                    c.setForeground(Color.BLACK); 
 
-                if (!isSelected) {
-                    c.setBackground(row % 2 == 0 ? TABLE_STRIPE : CARD_BACKGROUND); 
-                } else {
-                    c.setForeground(Color.WHITE);
+                    if (!isSelected) {
+                        c.setBackground(row % 2 == 0 ? TABLE_STRIPE : CARD_BACKGROUND); 
+                    } else {
+                        c.setForeground(Color.WHITE);
+                    }
                 }
                 return c;
             }
@@ -613,14 +870,47 @@ public class HostelManagementSystem extends JFrame {
         buttonPanel.add(editBtn);
         buttonPanel.add(deleteBtn);
 
-        panel.add(scrollPane, BorderLayout.CENTER);
+        JPanel centerContainer = new JPanel(new BorderLayout(0, 10));
+        centerContainer.setBackground(BACKGROUND_GRAY);
+        centerContainer.add(searchPanel, BorderLayout.NORTH);
+        centerContainer.add(scrollPane, BorderLayout.CENTER);
+        
+        panel.add(centerContainer, BorderLayout.CENTER);
         panel.add(buttonPanel, BorderLayout.SOUTH);
 
         return panel;
     }
     
-    // --- 5. FEE MANAGEMENT PANEL ---
+    private void filterStudents() {
+        String filterText = studentSearchField.getText().toLowerCase();
+        
+        studentTableModel.setRowCount(0);
+        
+        for (Student s : studentList) {
+            String studentData = s.name.toLowerCase() + s.room.toLowerCase();
+            
+            if (filterText.isEmpty() || studentData.contains(filterText)) {
+                 Object[] rowData = {
+                     s.name, 
+                     s.room, 
+                     s.course + " / " + s.branch,
+                     s.parentName,
+                     s.parentMobile,
+                     s.studentMobile
+                 };
+                 studentTableModel.addRow(rowData);
+            }
+        }
+    }
+
+
+    private void refreshStudentTable() {
+        filterStudents();
+    }
+    
+    // --- 5. FEE MANAGEMENT PANEL (Unchanged) ---
     private JPanel feeManagementPanel() {
+        // ... (Fee Management Panel unchanged)
         JPanel panel = new JPanel(new BorderLayout(15, 15));
         panel.setBackground(BACKGROUND_GRAY);
         panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
@@ -637,7 +927,6 @@ public class HostelManagementSystem extends JFrame {
         };
         feeStatusTable = new JTable(feeTableModel); 
         
-        // --- Table Styling ---
         feeStatusTable.getTableHeader().setFont(BUTTON_FONT.deriveFont(Font.BOLD, 14f));
         feeStatusTable.getTableHeader().setBackground(PRIMARY_COLOR.darker()); 
         feeStatusTable.getTableHeader().setForeground(Color.WHITE);
@@ -645,41 +934,41 @@ public class HostelManagementSystem extends JFrame {
         feeStatusTable.setSelectionBackground(ACCENT_COLOR); 
         feeStatusTable.setSelectionForeground(Color.WHITE);  
         
-        // Add row striping for visibility and balance renderer 
         feeStatusTable.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
             @Override
             public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
                 Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
                 
-                if (c instanceof JComponent) {
-                    ((JComponent) c).setOpaque(true); 
+                if (c instanceof JComponent jc) {
+                    jc.setOpaque(true); 
                 }
                 
-                c.setForeground(Color.BLACK); 
+                if (c != null) {
+                    c.setForeground(Color.BLACK); 
 
-                if (!isSelected) {
-                    c.setBackground(row % 2 == 0 ? TABLE_STRIPE : CARD_BACKGROUND);
-                } else {
-                    c.setForeground(Color.WHITE);
-                }
-                
-                // Existing Balance Renderer Logic (overrides foreground only if not selected)
-                if (column == 4 && value != null && !isSelected) { 
-                    try {
-                        String balanceText = value.toString().replace("₹ ", "");
-                        double balance = Double.parseDouble(balanceText);
-                        if (balance > 0.0) {
-                            c.setForeground(DELETE_COLOR); // Red if balance is due
-                            c.setFont(c.getFont().deriveFont(Font.BOLD));
-                        } else {
-                            c.setForeground(new Color(34, 139, 34)); // Green if paid
-                            c.setFont(c.getFont().deriveFont(Font.PLAIN));
-                        }
-                    } catch (Exception e) {
-                        c.setForeground(Color.BLACK);
+                    if (!isSelected) {
+                        c.setBackground(row % 2 == 0 ? TABLE_STRIPE : CARD_BACKGROUND);
+                    } else {
+                        c.setForeground(Color.WHITE);
                     }
-                } else if (column == 4 && isSelected) {
-                    c.setForeground(Color.WHITE);
+                    
+                    if (column == 4 && value != null && !isSelected) { 
+                        try {
+                            String balanceText = value.toString().replace("₹ ", "");
+                            double balance = Double.parseDouble(balanceText);
+                            if (balance > 0.0) {
+                                c.setForeground(DELETE_COLOR); 
+                                c.setFont(c.getFont().deriveFont(Font.BOLD));
+                            } else {
+                                c.setForeground(new Color(34, 139, 34)); 
+                                c.setFont(c.getFont().deriveFont(Font.PLAIN));
+                            }
+                        } catch (NumberFormatException e) {
+                            c.setForeground(Color.BLACK);
+                        }
+                    } else if (column == 4 && isSelected) {
+                        c.setForeground(Color.WHITE);
+                    }
                 }
                 
                 return c;
@@ -690,7 +979,7 @@ public class HostelManagementSystem extends JFrame {
         feeStatusTable.setFont(LABEL_FONT);
         feeStatusTable.setGridColor(BACKGROUND_GRAY.darker());
         
-        JScrollPane scrollPane = new JScrollPane(feeStatusTable); // CORRECTED TYPE
+        JScrollPane scrollPane = new JScrollPane(feeStatusTable); 
         scrollPane.setBorder(BorderFactory.createLineBorder(BACKGROUND_GRAY.darker(), 1));
 
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 10));
@@ -704,10 +993,11 @@ public class HostelManagementSystem extends JFrame {
         panel.add(buttonPanel, BorderLayout.SOUTH);
 
         feeStatusTable.addMouseListener(new MouseAdapter() {
+            @Override
             public void mouseClicked(MouseEvent e) {
                 int row = feeStatusTable.rowAtPoint(e.getPoint());
                 
-                if (row >= 0) { 
+                if (row >= 0 && row < studentList.size()) { 
                     showPaymentDialog(studentList.get(row));
                 }
             }
@@ -716,13 +1006,14 @@ public class HostelManagementSystem extends JFrame {
         return panel;
     }
     
-    // --- 6. STAFF MANAGEMENT PANEL ---
+    // --- 6. STAFF MANAGEMENT PANEL (Unchanged) ---
     private void showStaffManagementPanel() {
         refreshStaffTable();
         cardLayout.show(mainPanel, "StaffManagement");
     }
     
     private JPanel staffManagementPanel() {
+        // ... (Staff Management Panel unchanged)
         JPanel panel = new JPanel(new BorderLayout(15, 15));
         panel.setBackground(BACKGROUND_GRAY); 
         panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
@@ -732,7 +1023,6 @@ public class HostelManagementSystem extends JFrame {
         header.setForeground(PRIMARY_COLOR.darker());
         panel.add(header, BorderLayout.NORTH);
 
-        // UPDATED: Removed "Actions" column, Added "Address" column
         String[] columnNames = {"ID", "Name", "Role", "Mobile", "Address"}; 
         staffTableModel = new DefaultTableModel(columnNames, 0) {
             @Override
@@ -740,10 +1030,9 @@ public class HostelManagementSystem extends JFrame {
         };
         staffTable = new JTable(staffTableModel);
         
-        // --- Table Styling ---
         staffTable.getTableHeader().setFont(BUTTON_FONT.deriveFont(Font.BOLD, 14f));
-        staffTable.getTableHeader().setBackground(PRIMARY_COLOR); // Deep Blue Header
-        staffTable.getTableHeader().setForeground(Color.WHITE);   // White Text
+        staffTable.getTableHeader().setBackground(PRIMARY_COLOR); 
+        staffTable.getTableHeader().setForeground(Color.WHITE);   
         
         staffTable.setSelectionBackground(ACCENT_COLOR); 
         staffTable.setSelectionForeground(Color.WHITE);  
@@ -751,22 +1040,23 @@ public class HostelManagementSystem extends JFrame {
         staffTable.setFont(LABEL_FONT);
         staffTable.setGridColor(BACKGROUND_GRAY.darker());
         
-        // Staff Table Renderer (Same logic for visibility guarantee)
         staffTable.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
             @Override
             public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
                 Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
                 
-                if (c instanceof JComponent) {
-                    ((JComponent) c).setOpaque(true); 
+                if (c instanceof JComponent jc) {
+                    jc.setOpaque(true); 
                 }
 
-                c.setForeground(Color.BLACK); 
+                if (c != null) {
+                    c.setForeground(Color.BLACK); 
 
-                if (!isSelected) {
-                    c.setBackground(row % 2 == 0 ? TABLE_STRIPE : CARD_BACKGROUND); 
-                } else {
-                    c.setForeground(Color.WHITE);
+                    if (!isSelected) {
+                        c.setBackground(row % 2 == 0 ? TABLE_STRIPE : CARD_BACKGROUND); 
+                    } else {
+                        c.setForeground(Color.WHITE);
+                    }
                 }
                 return c;
             }
@@ -775,7 +1065,6 @@ public class HostelManagementSystem extends JFrame {
         JScrollPane scrollPane = new JScrollPane(staffTable);
         scrollPane.setBorder(BorderFactory.createLineBorder(BACKGROUND_GRAY.darker(), 1));
 
-        // Control Buttons
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 25, 10));
         buttonPanel.setBackground(BACKGROUND_GRAY);
         
@@ -791,7 +1080,6 @@ public class HostelManagementSystem extends JFrame {
         styleButton(editStaffBtn, ACCENT_COLOR.darker(), Color.WHITE);
         editStaffBtn.addActionListener(e -> handleStaffEdit());
         
-        // DELETION BUTTON
         JButton deleteStaffBtn = new JButton("❌ Delete Staff"); 
         styleButton(deleteStaffBtn, DELETE_COLOR, Color.WHITE);
         deleteStaffBtn.addActionListener(e -> handleStaffDelete()); 
@@ -799,7 +1087,7 @@ public class HostelManagementSystem extends JFrame {
         buttonPanel.add(backBtn);
         buttonPanel.add(addStaffBtn);
         buttonPanel.add(editStaffBtn);
-        buttonPanel.add(deleteStaffBtn); // ADDED DELETE BUTTON
+        buttonPanel.add(deleteStaffBtn);
 
         panel.add(scrollPane, BorderLayout.CENTER);
         panel.add(buttonPanel, BorderLayout.SOUTH);
@@ -807,7 +1095,7 @@ public class HostelManagementSystem extends JFrame {
         return panel;
     }
 
-    // --- 7. HELPLINE & SUGGESTION PANEL (Unchanged) ---
+    // --- 7. HELPLINE & SUGGESTION PANEL (UPDATED WITH STATUS CHECK BUTTON) ---
     private JPanel helplinePanel() {
         JPanel panel = new JPanel(new BorderLayout(20, 20));
         panel.setBackground(BACKGROUND_GRAY); 
@@ -818,7 +1106,6 @@ public class HostelManagementSystem extends JFrame {
         header.setForeground(PRIMARY_COLOR.darker());
         panel.add(header, BorderLayout.NORTH);
 
-        // --- CENTER: Helplines and Form Split ---
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
         splitPane.setResizeWeight(0.5);
         splitPane.setDividerLocation(0.5);
@@ -865,7 +1152,7 @@ public class HostelManagementSystem extends JFrame {
         inputGrid.add(new JLabel("Type of Feedback:"));
         inputGrid.add(typeComboBox);
         inputGrid.add(new JLabel("Details:"));
-        inputGrid.add(new JLabel("")); // Placeholder
+        inputGrid.add(new JLabel("")); 
 
         JButton submitBtn = new JButton("Submit Feedback");
         styleButton(submitBtn, PRIMARY_COLOR.darker(), Color.WHITE);
@@ -882,11 +1169,10 @@ public class HostelManagementSystem extends JFrame {
             }
             
             suggestionList.add(new Suggestion(sender, type, body));
-            saveSuggestionsToFile();
+            saveAllData(); 
             
             JOptionPane.showMessageDialog(this, "Thank you! Your " + type + " has been recorded.", "Feedback Submitted", JOptionPane.INFORMATION_MESSAGE);
             
-            // Clear form
             senderField.setText("");
             bodyArea.setText("");
         });
@@ -905,32 +1191,120 @@ public class HostelManagementSystem extends JFrame {
         styleButton(backBtn, PRIMARY_COLOR, Color.WHITE);
         backBtn.addActionListener(e -> cardLayout.show(mainPanel, "Dashboard"));
         
-        // ADDED REVIEW BUTTON
-        JButton reviewBtn = new JButton("Review Submitted Feedback");
+        // ADDED REVIEW BUTTON (FOR ADMIN)
+        JButton reviewBtn = new JButton("Review Submitted Feedback (Admin)");
         styleButton(reviewBtn, ACCENT_COLOR.darker(), Color.WHITE);
         reviewBtn.addActionListener(e -> cardLayout.show(mainPanel, "ReviewSuggestions"));
+        
+        // ADDED STATUS CHECK BUTTON (FOR STUDENTS)
+        JButton checkStatusBtn = new JButton("Check Feedback Status (Student)");
+        styleButton(checkStatusBtn, PRIMARY_COLOR.darker(), Color.WHITE);
+        checkStatusBtn.addActionListener(e -> cardLayout.show(mainPanel, "StudentFeedbackStatus"));
 
         JPanel southPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 5));
         southPanel.setBackground(BACKGROUND_GRAY);
         southPanel.add(reviewBtn);
+        southPanel.add(checkStatusBtn); // Added student status check
         southPanel.add(backBtn);
         panel.add(southPanel, BorderLayout.SOUTH);
 
         return panel;
     }
     
-    // --- 8. SUGGESTION REVIEW PANEL (FIXED VISIBILITY AND SCROLLING) ---
+    // --- 9. NEW STUDENT FEEDBACK STATUS PANEL ---
+    private JPanel viewStudentFeedbackPanel() {
+        JPanel panel = new JPanel(new BorderLayout(15, 15));
+        panel.setBackground(BACKGROUND_GRAY);
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 40, 20, 40));
+
+        JLabel header = new JLabel("Check Status of Your Submitted Feedback", SwingConstants.CENTER);
+        header.setFont(HEADER_FONT);
+        header.setForeground(PRIMARY_COLOR.darker());
+        panel.add(header, BorderLayout.NORTH);
+
+        // Input Field for Student ID/Room/Name
+        JTextField studentIdField = new JTextField(20);
+        JButton searchBtn = new JButton("Show My Feedback");
+        styleButton(searchBtn, ACCENT_COLOR, Color.WHITE);
+
+        JPanel searchBarPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        searchBarPanel.setBackground(BACKGROUND_GRAY);
+        searchBarPanel.add(new JLabel("Enter Your Name/Room:"));
+        searchBarPanel.add(studentIdField);
+        searchBarPanel.add(searchBtn);
+        
+        panel.add(searchBarPanel, BorderLayout.NORTH);
+
+        // Display Area for Results
+        JTextArea resultArea = new JTextArea(15, 50);
+        resultArea.setEditable(false);
+        resultArea.setFont(LABEL_FONT);
+        resultArea.setLineWrap(true);
+        resultArea.setWrapStyleWord(true);
+        
+        JScrollPane scrollPane = new JScrollPane(resultArea);
+        panel.add(scrollPane, BorderLayout.CENTER);
+
+        searchBtn.addActionListener(e -> {
+            String senderId = studentIdField.getText().trim();
+            if (senderId.isEmpty()) {
+                resultArea.setText("Please enter your Name or Room Number to check status.");
+                return;
+            }
+            
+            // Reload suggestions to get the latest status
+            try {
+                loadSuggestionsFromDB();
+            } catch (Exception ex) {
+                loadSuggestionsFromFile();
+            }
+
+            // Filter feedback by sender
+            String searchLower = senderId.toLowerCase();
+            String output = suggestionList.stream()
+                .filter(s -> s.sender.toLowerCase().contains(searchLower) || s.type.toLowerCase().contains(searchLower))
+                .map(s -> String.format(
+                    "--- %s (Submitted by: %s on %s) ---\n" +
+                    "Status: %s\n" +
+                    "Issue: %s\n" +
+                    "Warden Response: %s\n\n",
+                    s.type, s.sender, s.timestamp, s.status, s.body, s.adminResponse.isEmpty() ? "No official response yet." : s.adminResponse
+                ))
+                .collect(Collectors.joining(""));
+
+            if (output.isEmpty()) {
+                resultArea.setText("No feedback found matching '" + senderId + "'.\nEnsure you enter the name/room exactly as submitted (case-insensitive search is used).");
+            } else {
+                resultArea.setText("--- YOUR SUBMITTED FEEDBACK STATUS ---\n\n" + output);
+            }
+        });
+
+        // Bottom Panel
+        JPanel bottomPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 20, 10));
+        bottomPanel.setBackground(BACKGROUND_GRAY);
+        JButton backBtn = new JButton("<< Back to Helpline");
+        styleButton(backBtn, PRIMARY_COLOR, Color.WHITE);
+        backBtn.addActionListener(e -> cardLayout.show(mainPanel, "Helpline"));
+        bottomPanel.add(backBtn);
+        
+        panel.add(bottomPanel, BorderLayout.SOUTH);
+        
+        return panel;
+    }
+    
+    // --- 8. SUGGESTION REVIEW PANEL (UPDATED WITH STATUS AND RESPONSE) ---
     private JPanel reviewSuggestionsPanel() {
         JPanel panel = new JPanel(new BorderLayout(15, 15));
         panel.setBackground(BACKGROUND_GRAY); 
         panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
         
-        JLabel header = new JLabel("Review Student Feedback and Complaints", SwingConstants.CENTER);
+        JLabel header = new JLabel("Review Student Feedback and Complaints (Admin View)", SwingConstants.CENTER);
         header.setFont(HEADER_FONT);
         header.setForeground(PRIMARY_COLOR.darker());
         panel.add(header, BorderLayout.NORTH);
 
-        String[] columnNames = {"Timestamp", "Type", "Sender/Room", "Details"}; 
+        // UPDATED COLUMNS
+        String[] columnNames = {"Timestamp", "Type", "Sender/Room", "Details", "Status", "Warden Response"}; 
         suggestionTableModel = new DefaultTableModel(columnNames, 0) {
             @Override
             public boolean isCellEditable(int row, int column) { return false; }
@@ -938,37 +1312,53 @@ public class HostelManagementSystem extends JFrame {
         
         JTable table = new JTable(suggestionTableModel);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        
         table.getTableHeader().setFont(BUTTON_FONT.deriveFont(Font.BOLD, 14f));
         table.getTableHeader().setBackground(PRIMARY_COLOR.darker()); 
         table.getTableHeader().setForeground(Color.WHITE);
         
-        // FIX: Force Auto-Resize Off and set large width for the Detail column
         table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-        table.getColumnModel().getColumn(3).setPreferredWidth(450); // Make details column wide
+        table.getColumnModel().getColumn(3).setPreferredWidth(250); // Details
+        table.getColumnModel().getColumn(5).setPreferredWidth(250); // Response
+        table.getColumnModel().getColumn(4).setPreferredWidth(80); // Status
+        table.getColumnModel().getColumn(0).setPreferredWidth(120); // Timestamp
         
-        // FIX: Increased Row Height to accommodate potential multi-line rendering
         table.setRowHeight(40); 
         
         table.setFont(LABEL_FONT);
         table.setSelectionBackground(ACCENT_COLOR);
         table.setSelectionForeground(Color.WHITE);
 
-        // Renderer for visibility
+        // Renderer for status coloring and tooltips
         table.setDefaultRenderer(Object.class, new DefaultTableCellRenderer() {
             @Override
             public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
                 Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
                 if (c instanceof JComponent) { ((JComponent) c).setOpaque(true); }
-                c.setForeground(Color.BLACK); 
+                
+                String status = (String) table.getValueAt(row, 4); 
+                
                 if (!isSelected) {
                     c.setBackground(row % 2 == 0 ? TABLE_STRIPE : CARD_BACKGROUND);
+                    c.setForeground(Color.BLACK);
+                    
+                    // Apply color based on Status
+                    if (column == 4 && status != null) {
+                        if (status.equals("Resolved")) {
+                            c.setForeground(STATUS_RESOLVED_COLOR.darker());
+                            c.setFont(c.getFont().deriveFont(Font.BOLD));
+                        } else if (status.equals("Pending")) {
+                            c.setForeground(STATUS_PENDING_COLOR);
+                            c.setFont(c.getFont().deriveFont(Font.BOLD));
+                        }
+                    }
                 } else {
                     c.setForeground(Color.WHITE);
                 }
                 
                 // Set Tooltip for full visibility of truncated text
-                if (column == 3 && value != null) {
-                    ((JComponent) c).setToolTipText(value.toString());
+                if (column == 3 || column == 5) {
+                    ((JComponent) c).setToolTipText(value != null ? value.toString() : null);
                 } else {
                     ((JComponent) c).setToolTipText(null);
                 }
@@ -977,7 +1367,7 @@ public class HostelManagementSystem extends JFrame {
             }
         });
 
-        JScrollPane scrollPane = new JScrollPane(table); // JScrollPane adds the scrolling
+        JScrollPane scrollPane = new JScrollPane(table);
         scrollPane.setBorder(BorderFactory.createLineBorder(BACKGROUND_GRAY.darker(), 1));
 
         // Button Panel
@@ -987,6 +1377,20 @@ public class HostelManagementSystem extends JFrame {
         JButton refreshBtn = new JButton("↻ Refresh / Load");
         styleButton(refreshBtn, PRIMARY_COLOR, Color.WHITE);
         refreshBtn.addActionListener(e -> refreshSuggestionsTable());
+        
+        // NEW STATUS BUTTON
+        JButton updateStatusBtn = new JButton("✅ Update Status/Respond");
+        styleButton(updateStatusBtn, ACCENT_COLOR, Color.WHITE);
+        updateStatusBtn.addActionListener(e -> {
+            int selectedRow = table.getSelectedRow();
+            if (selectedRow == -1) {
+                JOptionPane.showMessageDialog(this, "Please select a feedback entry to update.", "Selection Error", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            // Get the actual suggestion object using the list index (table isn't filtered here)
+            Suggestion suggestionToUpdate = suggestionList.get(selectedRow);
+            updateSuggestionStatusDialog(suggestionToUpdate);
+        });
 
         JButton deleteSelectedBtn = new JButton("🗑️ Delete Selected Feedback");
         styleButton(deleteSelectedBtn, DELETE_COLOR, Color.WHITE);
@@ -997,10 +1401,11 @@ public class HostelManagementSystem extends JFrame {
         backBtn.addActionListener(e -> cardLayout.show(mainPanel, "Helpline"));
 
         buttonPanel.add(refreshBtn);
+        buttonPanel.add(updateStatusBtn); // Added new button
         buttonPanel.add(deleteSelectedBtn);
         buttonPanel.add(backBtn);
 
-        panel.add(scrollPane, BorderLayout.CENTER); // ADDED SCROLLPANE HERE
+        panel.add(scrollPane, BorderLayout.CENTER); 
         panel.add(buttonPanel, BorderLayout.SOUTH);
 
         refreshSuggestionsTable(); // Initial load
@@ -1010,23 +1415,79 @@ public class HostelManagementSystem extends JFrame {
     private void refreshSuggestionsTable() {
         if (suggestionTableModel != null) {
             suggestionTableModel.setRowCount(0);
-            
-            // Ensure data is current
-            loadSuggestionsFromFile(); 
 
             for (Suggestion s : suggestionList) {
                 Object[] rowData = {
                     s.timestamp, 
                     s.type,
                     s.sender,
-                    s.body
+                    s.body,
+                    s.status, // NEW
+                    s.adminResponse // NEW
                 };
                 suggestionTableModel.addRow(rowData);
             }
         }
     }
     
+    private void updateSuggestionStatusDialog(Suggestion s) {
+        JDialog dialog = new JDialog(this, "Update Feedback Status for " + s.sender, true);
+        dialog.setLayout(new BorderLayout(10, 10));
+        dialog.setSize(500, 350);
+        dialog.setLocationRelativeTo(this);
+
+        JPanel dialogMainPanel = new JPanel(new BorderLayout(10, 10));
+        dialogMainPanel.setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));
+
+        JPanel statusPanel = new JPanel(new GridLayout(3, 2, 5, 5));
+        
+        // 1. Current Status Display
+        statusPanel.add(new JLabel("Current Status:"));
+        JLabel currentStatusLabel = new JLabel(s.status);
+        currentStatusLabel.setFont(currentStatusLabel.getFont().deriveFont(Font.BOLD, 14f));
+        statusPanel.add(currentStatusLabel);
+        
+        // 2. New Status Selection
+        String[] statuses = {"Pending", "In Progress", "Resolved", "Rejected"};
+        JComboBox<String> statusComboBox = new JComboBox<>(statuses);
+        statusComboBox.setSelectedItem(s.status);
+        
+        statusPanel.add(new JLabel("New Status:"));
+        statusPanel.add(statusComboBox);
+
+        // 3. Admin Response Area
+        JTextArea responseArea = new JTextArea(s.adminResponse, 5, 20);
+        responseArea.setLineWrap(true);
+        responseArea.setWrapStyleWord(true);
+        
+        dialogMainPanel.add(statusPanel, BorderLayout.NORTH);
+        dialogMainPanel.add(new JScrollPane(responseArea), BorderLayout.CENTER);
+        
+        JButton saveBtn = new JButton("Save Status and Response");
+        styleButton(saveBtn, ACCENT_COLOR.darker(), Color.WHITE);
+
+        saveBtn.addActionListener(e -> {
+            s.status = (String) statusComboBox.getSelectedItem();
+            s.adminResponse = responseArea.getText().trim();
+            
+            if (s.adminResponse.isEmpty() && !s.status.equals("Pending")) {
+                JOptionPane.showMessageDialog(dialog, "Please provide a brief response/reason when changing status.", "Missing Response", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            saveAllData(); // Save changes
+            refreshSuggestionsTable(); // Refresh the admin table
+            dialog.dispose();
+            JOptionPane.showMessageDialog(this, "Status updated and response recorded.", "Success", JOptionPane.INFORMATION_MESSAGE);
+        });
+        
+        dialog.add(dialogMainPanel, BorderLayout.CENTER);
+        dialog.add(saveBtn, BorderLayout.SOUTH);
+        dialog.setVisible(true);
+    }
+
     private void handleSuggestionDelete(JTable table) {
+        // ... (Deletion logic unchanged)
         int selectedRow = table.getSelectedRow();
         if (selectedRow == -1) {
             JOptionPane.showMessageDialog(this, "Please select a feedback entry to delete.", "Selection Error", JOptionPane.WARNING_MESSAGE);
@@ -1041,154 +1502,154 @@ public class HostelManagementSystem extends JFrame {
             
         if (confirm == JOptionPane.YES_OPTION) {
             suggestionList.remove(selectedRow);
-            saveSuggestionsToFile(); // Save immediately after removing from list
-            refreshSuggestionsTable(); // Refresh the table from the updated list
+            saveAllData(); 
+            refreshSuggestionsTable(); 
             JOptionPane.showMessageDialog(this, "Feedback deleted.", "Deletion Success", JOptionPane.INFORMATION_MESSAGE);
         }
     }
     
-    // --- NEW STAFF CRUD METHODS ---
+    // --- STAFF CRUD METHODS ---
+    // ... (Staff methods unchanged)
     
     private void registerStaff(Staff staffToEdit) {
-        staffNameField = new JTextField(20);
-        staffMobileField = new JTextField(20);
-        staffIDField = new JTextField(10);
-        staffAddressArea = new JTextArea(3, 20); // Initialize new address input
-        
-        String[] roles = {"Housekeeping", "Security", "Maintenance", "Office Staff"};
-        staffRoleComboBox = new JComboBox<>(roles);
-        
-        String dialogTitle = "Register New Staff Member";
-        boolean isEditing = (staffToEdit != null);
-        
-        if (isEditing) {
-            dialogTitle = "Edit Staff Record";
-            editingStaffIndex = staffList.indexOf(staffToEdit);
-            staffNameField.setText(staffToEdit.name);
-            staffMobileField.setText(staffToEdit.mobile);
-            staffIDField.setText(staffToEdit.id);
-            staffIDField.setEditable(false); 
-            staffRoleComboBox.setSelectedItem(staffToEdit.role);
-            staffAddressArea.setText(staffToEdit.address); // Load address
-        } else {
-            editingStaffIndex = -1;
-        }
-
-        JPanel regPanel = new JPanel();
-        regPanel.setLayout(new BoxLayout(regPanel, BoxLayout.Y_AXIS));
-
-        JPanel gridPanel = new JPanel(new GridLayout(4, 2, 10, 10));
-
-        gridPanel.add(new JLabel("Staff Name:"));
-        gridPanel.add(staffNameField);
-        gridPanel.add(new JLabel("Staff ID (Unique):"));
-        gridPanel.add(staffIDField);
-        gridPanel.add(new JLabel("Role:"));
-        gridPanel.add(staffRoleComboBox);
-        gridPanel.add(new JLabel("Mobile Number:"));
-        gridPanel.add(staffMobileField);
-
-        JPanel addressPanel = new JPanel(new BorderLayout(5, 5));
-        addressPanel.setBorder(BorderFactory.createTitledBorder("Address"));
-        addressPanel.add(new JScrollPane(staffAddressArea), BorderLayout.CENTER);
-
-        regPanel.add(gridPanel);
-        regPanel.add(addressPanel);
-
-        int result = JOptionPane.showConfirmDialog(this, regPanel, dialogTitle,
-                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        
-        if (result == JOptionPane.OK_OPTION) {
-            String name = staffNameField.getText().trim();
-            String id = staffIDField.getText().trim();
-            String mobile = staffMobileField.getText().trim();
-            String role = (String) staffRoleComboBox.getSelectedItem();
-            String address = staffAddressArea.getText().trim(); // Capture new address
-
-            if (name.isEmpty() || id.isEmpty() || mobile.isEmpty() || address.isEmpty()) { // Added address validation
-                 JOptionPane.showMessageDialog(this, "All fields are required!", "Error", JOptionPane.ERROR_MESSAGE);
-                 return;
-            }
-            if (!mobile.matches("\\d+")) { 
-                 JOptionPane.showMessageDialog(this, "Mobile Number must be numeric!", "Error", JOptionPane.ERROR_MESSAGE);
-                 return;
-            }
-            
-            if (!isEditing && staffList.stream().anyMatch(s -> s.id.equals(id))) {
-                 JOptionPane.showMessageDialog(this, "Staff ID must be unique!", "Error", JOptionPane.ERROR_MESSAGE);
-                 return;
-            }
-            
-            Staff newOrUpdatedStaff = new Staff(id, name, role, mobile, address); // Pass address to constructor
-
-            if (isEditing) {
-                // Update properties of the existing object to preserve it in the list
-                staffToEdit.name = name;
-                staffToEdit.role = role;
-                staffToEdit.mobile = mobile;
-                staffToEdit.address = address; 
-                JOptionPane.showMessageDialog(this, "Staff Updated Successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
-            } else {
-                staffList.add(newOrUpdatedStaff);
-                JOptionPane.showMessageDialog(this, "Staff Registered Successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
-            }
-            
-            refreshStaffTable();
-            saveStaffToFile(); 
-        }
-        editingStaffIndex = -1;
+         // ... (Staff registration logic unchanged)
+         staffNameField = new JTextField(20);
+         staffMobileField = new JTextField(20);
+         staffIDField = new JTextField(10);
+         staffAddressArea = new JTextArea(3, 20); 
+         
+         String[] roles = {"Housekeeping", "Security", "Maintenance", "Office Staff"};
+         staffRoleComboBox = new JComboBox<>(roles);
+         
+         String dialogTitle = "Register New Staff Member";
+         boolean isEditing = (staffToEdit != null);
+         
+         if (isEditing && staffToEdit != null) {
+             dialogTitle = "Edit Staff Record";
+             staffNameField.setText(staffToEdit.name);
+             staffMobileField.setText(staffToEdit.mobile);
+             staffIDField.setText(staffToEdit.id);
+             staffIDField.setEditable(false); 
+             staffRoleComboBox.setSelectedItem(staffToEdit.role);
+             staffAddressArea.setText(staffToEdit.address); 
+         } else {
+             // New staff record
+         }
+ 
+         JPanel regPanel = new JPanel();
+         regPanel.setLayout(new BoxLayout(regPanel, BoxLayout.Y_AXIS));
+ 
+         JPanel gridPanel = new JPanel(new GridLayout(4, 2, 10, 10));
+ 
+         gridPanel.add(new JLabel("Staff Name:"));
+         gridPanel.add(staffNameField);
+         gridPanel.add(new JLabel("Staff ID (Unique):"));
+         gridPanel.add(staffIDField);
+         gridPanel.add(new JLabel("Role:"));
+         gridPanel.add(staffRoleComboBox);
+         gridPanel.add(new JLabel("Mobile Number:"));
+         gridPanel.add(staffMobileField);
+ 
+         JPanel addressPanel = new JPanel(new BorderLayout(5, 5));
+         addressPanel.setBorder(BorderFactory.createTitledBorder("Address"));
+         addressPanel.add(new JScrollPane(staffAddressArea), BorderLayout.CENTER);
+ 
+         regPanel.add(gridPanel);
+         regPanel.add(addressPanel);
+ 
+         int result = JOptionPane.showConfirmDialog(this, regPanel, dialogTitle,
+                  JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+         
+         if (result == JOptionPane.OK_OPTION) {
+             String name = staffNameField.getText().trim();
+             String id = staffIDField.getText().trim();
+             String mobile = staffMobileField.getText().trim();
+             String role = (String) staffRoleComboBox.getSelectedItem();
+             String address = staffAddressArea.getText().trim(); 
+ 
+             if (name.isEmpty() || id.isEmpty() || mobile.isEmpty() || address.isEmpty()) { 
+                  JOptionPane.showMessageDialog(this, "All fields are required!", "Error", JOptionPane.ERROR_MESSAGE);
+                  return;
+             }
+             if (!mobile.matches("\\d+")) { 
+                  JOptionPane.showMessageDialog(this, "Mobile Number must be numeric!", "Error", JOptionPane.ERROR_MESSAGE);
+                  return;
+             }
+             
+             if (!isEditing && staffList.stream().anyMatch(s -> s.id.equals(id))) {
+                  JOptionPane.showMessageDialog(this, "Staff ID must be unique!", "Error", JOptionPane.ERROR_MESSAGE);
+                  return;
+             }
+             
+             Staff newOrUpdatedStaff = new Staff(id, name, role, mobile, address); 
+ 
+             if (isEditing && staffToEdit != null) {
+                 staffToEdit.name = name;
+                 staffToEdit.role = role;
+                 staffToEdit.mobile = mobile;
+                 staffToEdit.address = address; 
+                 JOptionPane.showMessageDialog(this, "Staff Updated Successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
+             } else {
+                 staffList.add(newOrUpdatedStaff);
+                 JOptionPane.showMessageDialog(this, "Staff Registered Successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
+             }
+             
+             refreshStaffTable();
+             saveAllData(); 
+         }
     }
     
     private void refreshStaffTable() {
-        if (staffTableModel != null) {
-             staffTableModel.setRowCount(0);
-
-            for (Staff s : staffList) {
-                Object[] rowData = {
-                    s.id, 
-                    s.name, 
-                    s.role, 
-                    s.mobile,
-                    s.address // Display the address
-                };
-                staffTableModel.addRow(rowData);
-            }
-        }
+         // ... (Staff table refresh unchanged)
+         if (staffTableModel != null) {
+               staffTableModel.setRowCount(0);
+               
+             for (Staff s : staffList) {
+                 Object[] rowData = {
+                     s.id, 
+                     s.name, 
+                     s.role, 
+                     s.mobile,
+                     s.address 
+                 };
+                 staffTableModel.addRow(rowData);
+             }
+         }
     }
     
     private void handleStaffEdit() {
-        int selectedRow = staffTable.getSelectedRow();
-        if (selectedRow == -1) {
-            JOptionPane.showMessageDialog(this, "Please select a staff record to edit.", "Selection Error", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-        
-        Staff staffToEdit = staffList.get(selectedRow);
-        registerStaff(staffToEdit); 
+         // ... (Staff edit logic unchanged)
+         int selectedRow = staffTable.getSelectedRow();
+         if (selectedRow == -1) {
+             JOptionPane.showMessageDialog(this, "Please select a staff record to edit.", "Selection Error", JOptionPane.WARNING_MESSAGE);
+             return;
+         }
+         
+         Staff staffToEdit = staffList.get(selectedRow);
+         registerStaff(staffToEdit); 
     }
     
     private void handleStaffDelete() {
-        int selectedRow = staffTable.getSelectedRow();
-        if (selectedRow == -1) {
-            JOptionPane.showMessageDialog(this, "Please select a staff record to delete.", "Selection Error", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-        
-        Staff staffToDelete = staffList.get(selectedRow);
-        
-        int confirm = JOptionPane.showConfirmDialog(this, 
-            "Are you sure you want to delete the record for staff member " + staffToDelete.name + " (" + staffToDelete.role + ")?", 
-            "Confirm Deletion", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
-            
-        if (confirm == JOptionPane.YES_OPTION) {
-            staffList.remove(selectedRow);
-            refreshStaffTable();
-            saveStaffToFile(); 
-            JOptionPane.showMessageDialog(this, "Staff record deleted successfully.", "Deletion Success", JOptionPane.INFORMATION_MESSAGE);
-        }
+         // ... (Staff delete logic unchanged)
+         int selectedRow = staffTable.getSelectedRow();
+         if (selectedRow == -1) {
+             JOptionPane.showMessageDialog(this, "Please select a staff record to delete.", "Selection Error", JOptionPane.WARNING_MESSAGE);
+             return;
+         }
+         
+         Staff staffToDelete = staffList.get(selectedRow);
+         
+         int confirm = JOptionPane.showConfirmDialog(this, 
+             "Are you sure you want to delete the record for staff member " + staffToDelete.name + " (" + staffToDelete.role + ")?", 
+             "Confirm Deletion", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+             
+         if (confirm == JOptionPane.YES_OPTION) {
+             staffList.remove(selectedRow);
+             refreshStaffTable();
+             saveAllData(); 
+             JOptionPane.showMessageDialog(this, "Staff record deleted successfully.", "Deletion Success", JOptionPane.INFORMATION_MESSAGE);
+         }
     }
-
-    // --- Helper Methods (Student & Fee Management) ---
 
     private void showFeeManagementPanel() {
         refreshFeeTable();
@@ -1196,9 +1657,17 @@ public class HostelManagementSystem extends JFrame {
     }
 
     private void refreshFeeTable() {
-        if (feeStatusTable != null) {
-            DefaultTableModel feeTableModel = (DefaultTableModel) feeStatusTable.getModel();
-            feeTableModel.setRowCount(0);
+         // ... (Fee table refresh logic unchanged)
+         if (feeStatusTable != null) {
+            
+             try {
+                loadStudentsFromDB();
+            } catch (Exception e) {
+                loadStudentsFromFile();
+            }
+
+            DefaultTableModel feeModel = (DefaultTableModel) feeStatusTable.getModel();
+            feeModel.setRowCount(0);
 
             for (Student s : studentList) {
                 Object[] rowData = {
@@ -1209,77 +1678,72 @@ public class HostelManagementSystem extends JFrame {
                     String.format("₹ %.2f", s.getFeeBalance()),
                     "Add Payment / View Details" 
                 };
-                feeTableModel.addRow(rowData);
+                feeModel.addRow(rowData);
             }
         }
     }
     
     private void showViewStudentsPanel() {
+        studentSearchField.setText("");
         refreshStudentTable();
         cardLayout.show(mainPanel, "ViewStudents");
     }
-
-    private void refreshStudentTable() {
-        if (studentTableModel != null) {
-            studentTableModel.setRowCount(0); 
-
-            for (Student s : studentList) {
-                Object[] rowData = {
-                    s.name, 
-                    s.room, 
-                    s.course + " / " + s.branch,
-                    s.parentName,
-                    s.parentMobile,
-                    s.studentMobile
-                };
-                studentTableModel.addRow(rowData);
-            }
-        }
-    }
     
     private void handleEdit() {
-        int selectedRow = studentTable.getSelectedRow();
-        if (selectedRow == -1) {
+        // ... (Handle Edit logic unchanged)
+        int viewRow = studentTable.getSelectedRow();
+        if (viewRow == -1) {
             JOptionPane.showMessageDialog(this, "Please select a student record to edit.", "Selection Error", JOptionPane.WARNING_MESSAGE);
             return;
         }
         
-        Student studentToEdit = studentList.get(selectedRow);
-        registerStudent(studentToEdit); 
+        String studentName = (String) studentTable.getValueAt(viewRow, 0);
+        Student studentToEdit = studentList.stream()
+                                           .filter(s -> s.name.equals(studentName))
+                                           .findFirst()
+                                           .orElse(null);
+        
+        if(studentToEdit != null) {
+            registerStudent(studentToEdit);
+        } else {
+             JOptionPane.showMessageDialog(this, "Error finding student record.", "Internal Error", JOptionPane.ERROR_MESSAGE);
+        }
     }
     
     private void handleDelete() {
-        int selectedRow = studentTable.getSelectedRow();
-        if (selectedRow == -1) {
-            JOptionPane.showMessageDialog(this, "Please select a student record to delete.", "Selection Error", JOptionPane.WARNING_MESSAGE);
-            return;
-        }
-        
-        Student studentToDelete = studentList.get(selectedRow);
-        
-        int confirm = JOptionPane.showConfirmDialog(this, 
-            "Are you sure you want to delete the record for " + studentToDelete.name + " (Room " + studentToDelete.room + ")?", 
-            "Confirm Deletion", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
-            
-        if (confirm == JOptionPane.YES_OPTION) {
-            studentList.remove(selectedRow);
-            refreshStudentTable();
-            saveStudentsToFile(); 
-            JOptionPane.showMessageDialog(this, "Record deleted successfully.", "Deletion Success", JOptionPane.INFORMATION_MESSAGE);
-        }
-    }
-    
-    private void allocateRoom() {
-        if (studentList.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "No students available for room allocation.", "Allocation Status", JOptionPane.WARNING_MESSAGE);
-        } else {
-            JOptionPane.showMessageDialog(this, 
-                studentList.size() + " Rooms successfully allocated to all registered students.", 
-                "Allocation Complete", JOptionPane.INFORMATION_MESSAGE);
-        }
+         // ... (Handle Delete logic unchanged)
+         int viewRow = studentTable.getSelectedRow();
+         if (viewRow == -1) {
+             JOptionPane.showMessageDialog(this, "Please select a student record to delete.", "Selection Error", JOptionPane.WARNING_MESSAGE);
+             return;
+         }
+         
+         String studentName = (String) studentTable.getValueAt(viewRow, 0);
+         Student studentToDelete = studentList.stream()
+                                              .filter(s -> s.name.equals(studentName))
+                                              .findFirst()
+                                              .orElse(null);
+         
+         if (studentToDelete == null) {
+             JOptionPane.showMessageDialog(this, "Error finding student record.", "Internal Error", JOptionPane.ERROR_MESSAGE);
+             return;
+         }
+         
+         int confirm = JOptionPane.showConfirmDialog(this, 
+             "Are you sure you want to delete the record for " + studentToDelete.name + " (Room " + studentToDelete.room + ")?", 
+             "Confirm Deletion", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+             
+         if (confirm == JOptionPane.YES_OPTION) {
+             studentList.remove(studentToDelete); 
+             refreshStudentTable();
+             saveAllData(); 
+             JOptionPane.showMessageDialog(this, "Record deleted successfully.", "Deletion Success", JOptionPane.INFORMATION_MESSAGE);
+         }
     }
     
     private void showPaymentDialog(Student student) {
+        // ... (Payment dialog logic unchanged)
+        
         JDialog paymentDialog = new JDialog(this, "Manage Fees for " + student.name, true);
         paymentDialog.setSize(450, 450);
         paymentDialog.setLayout(new BorderLayout(10, 10));
@@ -1329,7 +1793,7 @@ public class HostelManagementSystem extends JFrame {
                 if (amount > student.getFeeBalance()) throw new IllegalArgumentException("Payment exceeds remaining balance.");
                 
                 student.payments.add(new FeeRecord(date, amount, notes));
-                saveStudentsToFile(); 
+                saveAllData(); 
                 
                 JOptionPane.showMessageDialog(paymentDialog, "Payment recorded successfully.");
                 refreshFeeTable();
@@ -1367,7 +1831,7 @@ public class HostelManagementSystem extends JFrame {
         paymentDialog.setVisible(true);
     }
 
-    // --- Data Model Classes (Unchanged) ---
+    // --- Data Model Classes (UPDATED SUGGESTION) ---
     private static class FeeRecord implements Serializable {
         private static final long serialVersionUID = 2L;
         String date;
@@ -1381,13 +1845,13 @@ public class HostelManagementSystem extends JFrame {
         }
     }
     
-    private static class Staff implements Serializable { // UPDATED STAFF MODEL
+    private static class Staff implements Serializable { 
         private static final long serialVersionUID = 3L;
         String id;
         String name;
         String role;
         String mobile;
-        String address; // NEW ADDRESS FIELD
+        String address; 
 
         public Staff(String id, String name, String role, String mobile, String address) {
             this.id = id;
@@ -1399,7 +1863,7 @@ public class HostelManagementSystem extends JFrame {
     }
 
 
-    private static class Student implements Serializable { 
+    private static class Student implements Serializable {  
         private static final long serialVersionUID = 1L; 
         
         String name;
@@ -1438,22 +1902,30 @@ public class HostelManagementSystem extends JFrame {
         }
     }
     
-    private static class Suggestion implements Serializable { // NEW SUGGESTION MODEL
-        private static final long serialVersionUID = 4L;
+    private static class Suggestion implements Serializable { 
+        private static final long serialVersionUID = 5L; // Increased serialVersionUID
         String sender;
-        String type; // Complaint or Suggestion
+        String type; 
         String body;
         String timestamp;
+        
+        String status; // NEW: Status of the request/complaint
+        String adminResponse; // NEW: Warden's response
 
         public Suggestion(String sender, String type, String body) {
             this.sender = sender;
             this.type = type;
             this.body = body;
-            this.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+            this.timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            this.status = "Pending"; // Default Status
+            this.adminResponse = ""; // Default empty response
         }
     }
 
     public static void main(String[] args) {
+        // Ensure you have updated your MySQL database schema:
+        // ALTER TABLE suggestions ADD COLUMN status VARCHAR(20) DEFAULT 'Pending';
+        // ALTER TABLE suggestions ADD COLUMN admin_response TEXT DEFAULT '';
         SwingUtilities.invokeLater(HostelManagementSystem::new);
     }
 }
